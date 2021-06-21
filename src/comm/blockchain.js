@@ -21,7 +21,7 @@ class Blockchain {
     constructor(configPath) {
         let config = require(configPath);
         // A global map to associate unconfirmed txn ID to its status
-        this.unconfirmed_txn_map = {};
+        this.unconfirmed_txn_map = new Map();
         // An array of 3-value tuple, <an array of unconfirmed txn_status, resolve, time_out>
         this.txn_batches = [];
         this.blk_processing = false;
@@ -81,6 +81,7 @@ class Blockchain {
         return this.bcObj.prepareClients(number);
     }
 
+    // Resolve all the transactions that have not been finished in any batches
     finishIssueTxn() {
         let self = this;
         this.finish_timeout = setTimeout(()=>{
@@ -92,6 +93,8 @@ class Blockchain {
                     if (!txn_status.IsVerified() ) {
                         txn_status.SetVerification(true);
                         txn_status.SetStatusFail();
+                        self.unconfirmed_txn_map.delete(txn_status.GetID());
+                        console.log('Time out txn [' + txn_status.GetID().substring(0, 5) + '...]');
                     }
                 }
                 resolve_func(txn_statuses);
@@ -120,19 +123,19 @@ class Blockchain {
             self.blk_count += 1;
             // Filter txns by map
             valid_txnIds.forEach(valid_txnId => {
-                if (self.unconfirmed_txn_map.hasOwnProperty(valid_txnId)) {
-                    self.unconfirmed_txn_map[valid_txnId].SetStatusSuccess();
-                    self.unconfirmed_txn_map[valid_txnId].SetVerification(true);
-                    self.unconfirmed_txn_map[valid_txnId].Set('time_commit', blk_time);
-                    delete self.unconfirmed_txn_map[valid_txnId];
+                if (self.unconfirmed_txn_map.has(valid_txnId)) {
+                    self.unconfirmed_txn_map.get(valid_txnId).SetStatusSuccess();
+                    self.unconfirmed_txn_map.get(valid_txnId).SetVerification(true);
+                    self.unconfirmed_txn_map.get(valid_txnId).Set('time_commit', blk_time);
+                    self.unconfirmed_txn_map.delete(valid_txnId);
                 }
             });
 
             invalid_txnIds.forEach(invalid_txnId => {
-                if (self.unconfirmed_txn_map.hasOwnProperty(invalid_txnId)) {
-                    self.unconfirmed_txn_map[invalid_txnId].SetStatusFail();
-                    self.unconfirmed_txn_map[invalid_txnId].SetVerification(true);
-                    delete self.unconfirmed_txn_map[invalid_txnId];
+                if (self.unconfirmed_txn_map.has(invalid_txnId)) {
+                    self.unconfirmed_txn_map.get(invalid_txnId).SetStatusFail();
+                    self.unconfirmed_txn_map.get(invalid_txnId).SetVerification(true);
+                    self.unconfirmed_txn_map.delete(invalid_txnId);
                 }
             });
 
@@ -143,31 +146,23 @@ class Blockchain {
                 let txn_statuses = self.txn_batches[i][0];
                 for (let j=0; j < txn_statuses.length; j++) {
                     let txn_status = txn_statuses[j];
-                    if (!txn_status.IsVerified() ) {
-                        // 30s Time out a txn 
-                        if (Date.now() - txn_status.GetTimeCreate() > 10 * 1000) {
-                            txn_status.SetVerification(true);
-                            txn_status.SetStatusFail();
-                            delete self.unconfirmed_txn_map[txn_status.GetID()];
-                            console.log('Time out txn [' + txn_status.GetID().substring(0, 5) + '...]');
-                        } else {
-                            all_finished = false;
-                        }
+                    // If one of the transactions is not confirmed in a batch, do not resolve the batch.
+                    if (!txn_status.IsVerified()) {
+                        all_finished = false;
+                        break;
                     }
                 }
                 if (all_finished) {
                     finished_batch_idx.push(i);
                 }
             }
-            // console.log("" + finished_batch_idx.length + " txn batch finished. ");
+
             // Remove the txn batch if its txns have all finished. 
             for (let i = finished_batch_idx.length - 1;i >= 0; i--) {
                 let remove_idx = finished_batch_idx[i];
                 let finished_batch = self.txn_batches.splice(remove_idx, 1)[0];
                 let txn_statuses = finished_batch[0];
                 let resolve_func = finished_batch[1];
-                // let resolve_timeout = finished_batch[2];
-                // clearTimeout(resolve_timeout);
                 resolve_func(txn_statuses);
             }
         }, err_cb);
@@ -265,7 +260,7 @@ class Blockchain {
             ///////////////////////////////////////////////////////
                 if (!txn_status.IsVerified()) {
                     allConfirmed = false;
-                    self.unconfirmed_txn_map[txn_status.GetID()] = txn_status;
+                    self.unconfirmed_txn_map.set(txn_status.GetID(), txn_status);
                 }
             });
             return new Promise((resolve, reject) => {
