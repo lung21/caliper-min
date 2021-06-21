@@ -151,14 +151,15 @@ function getResultValue(r) {
         row.push((r.delay.sum / r.succ).toFixed(3) + ' s');
         obj.avg_delay=(r.delay.sum / r.succ).toFixed(3);
 
-        if (r.final.max === r.final.min) { 
-            row.push(r.succ + ' tps');
-            obj.thruput=r.succ;
-        } else {
+        // Comment out temporarily for correct metrics
+        // if (r.final.max === r.final.min) { 
+        //     row.push(r.succ + ' tps');
+        //     obj.thruput=r.succ;
+        // } else {
             let thruput=((r.succ / (r.final.max - r.create.min)).toFixed(2));
             obj.thruput = thruput;
             row.push(thruput + ' tps');
-        }
+        // }
     }
     catch (err) {
         // temporarily remove percentile row = [r.label, 0, 0, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
