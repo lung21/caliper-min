@@ -1,0 +1,3 @@
+*.js
+
+docker run --rm -v $(pwd):/data busybox sh -c 'rm -rf /data'
