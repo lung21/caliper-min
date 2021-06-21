@@ -514,7 +514,7 @@ function instantiateChaincode(chaincode, endorsement_policy, upgrade){
                     let message = 'REQUEST_TIMEOUT:' + eh.getPeerAddr();
                     reject(new Error(message));
                     eh.disconnect();
-                }, 3000);
+                }, 30000);
                 eh.registerTxEvent(tx_id_string, (tx, code, block_num) => {
                     // commUtils.log('The chaincode invoke chaincode transaction has been committed on peer ' + eh.getPeerAddr());
                     // commUtils.log('Transaction ' + tx + ' ' + code + ' has status of %s in block ' + block_num);
