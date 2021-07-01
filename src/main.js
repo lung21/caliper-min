@@ -12,7 +12,8 @@ const log = require('./comm/util.js').log;
 let process = require('process');
 
 let configFile;
-let networkFile;
+let soloNetFile;
+let raftNetFile;
 let resultFile;
 /**
  * sets the config file
@@ -28,8 +29,12 @@ function setConfig(file) {
  * @param {string} file indicates network file name
  * @returns {void}
  **/
-function setNetwork(file) {
-    networkFile = file;
+function setSoloNetwork(file) {
+    soloNetFile = file;
+}
+
+function setRaftNetwork(file) {
+    raftNetFile = file;
 }
 
 function setResult(file) {
@@ -44,7 +49,8 @@ function main() {
     let program = require('commander');
     program.version('0.1')
         .option('-c, --config <file>', 'config file of the benchmark', setConfig)
-        .option('-n, --network <file>', 'config file of the blockchain system under test', setNetwork)
+        .option('-s, --solo-network <file>', 'config file of the solo blockchain network', setSoloNetwork)
+        .option('-n, --raft-network <file>', 'config file of the raft blockchain network', setRaftNetwork)
         .option('-r, --result <file>', 'result file of the blockchain system under test, if not provided, default result.json will be used', setResult)
         .parse(process.argv);
 
@@ -58,18 +64,21 @@ function main() {
         return;
     }
 
-    let absNetworkFile = path.join(cur_work_dir, networkFile);
+    let absSoloNetFile = path.join(cur_work_dir, soloNetFile);
+    let absRaftNetFile = path.join(cur_work_dir, raftNetFile);
 
-    if(!fs.existsSync(absNetworkFile)) {
-        log('Network file ' + absNetworkFile + ' does not exist');
+    if(!fs.existsSync(absSoloNetFile) || !fs.existsSync(absRaftNetFile)) {
+        log('Network file does not exist');
         return;
     }
 
+    let absNetworkFiles = [absSoloNetFile, absRaftNetFile];
+
     let framework = require('./comm/bench-flow.js');
     if (typeof resultFile === 'undefined') {
-        framework.run(absConfigFile, absNetworkFile, 'result.json')
+        framework.run(absConfigFile, absNetworkFiles, 'result.json')
     } else {
-        framework.run(absConfigFile, absNetworkFile, resultFile);
+        framework.run(absConfigFile, absNetworkFiles, resultFile);
     }
 }
 

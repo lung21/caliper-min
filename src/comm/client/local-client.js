@@ -7,45 +7,51 @@
 
 'use strict';
 
+const { promises } = require('fs');
 // global variables
 const bc   = require('../blockchain.js');
 const RateControl = require('../rate-control/rateControl.js');
+const TxStatus = require('../transaction.js');
 const Util = require('../util.js');
 const log  = Util.log;
 
-let blockchain;
-let results      = [];
-let txNum        = 0;
-let txLastNum    = 0;
+let soloBC;
+let raftBC;
+let txUpdateInter;
+let soloResults = [];
+let raftResults = [];
+let soloTxNum = 0;
+let raftTxNum = 0;
+let soloTxLastNum = 0;
+let raftTxLastNum = 0;
 
-let invokeStats  = [];  // invoke stats
-let detailedDelayStats  = [];  // delay for invoke stats
-let queryStats  = [];  // query stats
-let resultStats  = [];  // overall stats
+let allStats = {
+    simul: {},
+    solo: {},
+    raft: {}
+};
 
-let txUpdateTime = 1000;
+let txUpdateTime = 500;
 let trimType = 0;
 let trim = 0;
 let startTime = 0;
-let round_timeout;
 
-/**
- * Calculate realtime transaction statistics and send the txUpdated message
- */
-function txUpdate() {
-    let newNum = txNum - txLastNum;
-    txLastNum += newNum;
 
-    // results is an array of txnstatus
-    let newResults = results.slice(0);
-    results = [];
-    if(newResults.length === 0 && newNum === 0) {
-        return;
-    }
+function generateStats(prev_stats, results) {
+
+    let invokeStats = [];  // invoke stats
+    let queryStats = [];  // query stats
+    let resultStats = [];  // overall stats
+    let detailedDelayStats = [];  // delay for invoke stats
+
+    if (prev_stats['query_stats'] !== undefined) queryStats.push(prev_stats['query_stats']);
+    if (prev_stats['invoke_stats'] !== undefined) invokeStats.push(prev_stats['invoke_stats']);
+    if (prev_stats['overall_stats'] !== undefined) resultStats.push(prev_stats['overall_stats']);
+    if (prev_stats['detailed_delay_stats'] !== undefined) detailedDelayStats.push(prev_stats['detailed_delay_stats']);
 
     let newQueryTxnStatuses = [];
     let newInvokeTxnStatuses = [];
-    newResults.forEach(function(newTxnStatus) {
+    results.forEach(function(newTxnStatus) {
         if (newTxnStatus.Get("operation") === "query") {
             newQueryTxnStatuses.push(newTxnStatus);
         } else if (newTxnStatus.Get("operation") === "invoke") {
@@ -59,7 +65,7 @@ function txUpdate() {
     if (newQueryTxnStatuses.length === 0) {
         newQueryStats = bc.createNullDefaultTxStats();
     } else {
-        newQueryStats = blockchain.getDefaultTxStats(newQueryTxnStatuses, true);
+        newQueryStats = bc.getDefaultTxStats(newQueryTxnStatuses, true);
     }
 
     let newInvokeStats;
@@ -68,24 +74,22 @@ function txUpdate() {
         newInvokeStats = bc.createNullDefaultTxStats();
         newDetailedDelayStats = bc.createNullDetailedDelayStats();
     } else {
-        newInvokeStats = blockchain.getDefaultTxStats(newInvokeTxnStatuses, true);
-        newDetailedDelayStats = blockchain.getDetailedDelayStats(newInvokeTxnStatuses, false)
+        newInvokeStats = bc.getDefaultTxStats(newInvokeTxnStatuses, true);
+        newDetailedDelayStats = bc.getDetailedDelayStats(newInvokeTxnStatuses, false)
     }
 
 
     let newStats;
-    if(newResults.length === 0) {
+    if(results.length === 0) {
         newStats = bc.createNullDefaultTxStats();
     } else {
-        newStats = blockchain.getDefaultTxStats(newResults, true);
+        newStats = bc.getDefaultTxStats(results, true);
     }
-    process.send({type: 'txUpdated', data: {submitted: newNum, committed: newStats}});
-
 
     if (queryStats.length === 0) {
         switch (trimType) {
         case 0: // no trim
-            queryStats[0] = newQueryStats;
+            queryStats.push(newQueryStats);
             break;
         case 1: // based on duration
             if (trim < (Date.now() - startTime)/1000) {
@@ -99,16 +103,16 @@ function txUpdate() {
             break;
         }
     } else {
-        queryStats[1] = newQueryStats;
-        bc.mergeDefaultTxStats(queryStats);
+        queryStats.push(newQueryStats);
+        // bc.mergeDefaultTxStats(queryStats);
     }
 
 
     if (invokeStats.length === 0) {
         switch (trimType) {
         case 0: // no trim
-            invokeStats[0] = newInvokeStats;
-            detailedDelayStats[0] = newDetailedDelayStats;
+            invokeStats.push(newInvokeStats);
+            detailedDelayStats.push(newDetailedDelayStats);
             break;
         case 1: // based on duration
             if (trim < (Date.now() - startTime)/1000) {
@@ -124,16 +128,16 @@ function txUpdate() {
             break;
         }
     } else {
-        invokeStats[1] = newInvokeStats;
-        detailedDelayStats[1] = newDetailedDelayStats;
-        bc.mergeDefaultTxStats(invokeStats);
-        bc.mergeDetailedDelayStats(detailedDelayStats);
+        invokeStats.push(newInvokeStats);
+        detailedDelayStats.push(newDetailedDelayStats);
+        // bc.mergeDefaultTxStats(invokeStats);
+        // bc.mergeDetailedDelayStats(detailedDelayStats);
     }
 
     if (resultStats.length === 0) {
         switch (trimType) {
         case 0: // no trim
-            resultStats[0] = newStats;
+            resultStats.push(newStats);
             break;
         case 1: // based on duration
             if (trim < (Date.now() - startTime)/1000) {
@@ -149,23 +153,105 @@ function txUpdate() {
             break;
         }
     } else {
-        resultStats[1] = newStats;
-        bc.mergeDefaultTxStats(resultStats);
+        resultStats.push(newStats);
+        // bc.mergeDefaultTxStats(resultStats);
     }
+
+    // remove empty stats for each category
+    bc.mergeDefaultTxStats(queryStats);
+    bc.mergeDefaultTxStats(invokeStats);
+    bc.mergeDefaultTxStats(resultStats);
+    bc.mergeDetailedDelayStats(detailedDelayStats);
+
+    let stats = {};
+
+    if (queryStats.length > 0) stats['query_stats'] = queryStats[0];
+    if (invokeStats.length > 0) stats['invoke_stats'] = invokeStats[0];
+    if (resultStats.length > 0) stats['overall_stats'] = resultStats[0];
+    if (detailedDelayStats.length > 0) stats['detailed_delay_stats'] = detailedDelayStats[0];
+
+    return stats;
+}
+
+/**
+ * Calculate realtime transaction statistics and send the txUpdated message
+ */
+function txUpdate() {
+    let soloNewNum = soloTxNum - soloTxLastNum;
+    let raftNewNum = raftTxNum - raftTxLastNum;
+    soloTxLastNum = soloTxNum;
+    raftTxLastNum = raftTxNum;
+
+    let newSoloResults = soloResults.slice(0);
+    let newRaftResults = raftResults.slice(0);
+    soloResults = [];
+    raftResults = [];
+
+    let newTxNum = soloNewNum + raftNewNum;
+
+    let newStats;
+    newStats = bc.createNullDefaultTxStats();
+
+    let data = {};
+    // results is an array of txnstatus
+    if (newSoloResults.length !== 0) {
+        allStats.solo = generateStats(allStats.solo, newSoloResults);
+    }
+
+    if (newRaftResults.length !== 0) {
+        allStats.raft = generateStats(allStats.raft, newRaftResults);
+    }
+
+    if (newSoloResults.length !== 0 && newRaftResults.length !== 0) {
+        let results = combineResults(newSoloResults, newRaftResults);
+        allStats.simul = generateStats(allStats.simul, results);
+    }
+
+    if (newSoloResults.length !== 0 || newRaftResults.length !== 0) {
+        newStats = bc.getDefaultTxStats([...newSoloResults, ...newRaftResults], false);
+    }
+
+    data['committed'] = newStats;
+    data['submitted'] = newTxNum;
+
+    process.send({type: 'txUpdated', data});
+
+}
+
+function combineResults(resultsA, resultsB) {
+    let resultsC = [];
+
+    if (resultsA.length !== resultsB.length) throw new Error("size of both results arrays has to be the same")
+
+    for (let i = 0; i < resultsA.length; ++i) {
+        if (resultsA[i].IsCommitted() && resultsB[i].IsCommitted()) {
+            let oldResultA = resultsA[i];
+            let oldResultB = resultsB[i];
+
+            let commitTime = oldResultA.Get("time_commit");
+            let orderTime = oldResultA.Get("time_order");
+            let proposalDuration = commitTime - orderTime;
+
+            let newResult = oldResultB.clone();
+            newResult.Set("time_commit", proposalDuration + oldResultB.Get("time_commit"));
+
+            resultsC.push(newResult);
+        }
+    }
+
+    return resultsC;
 }
 
 /**
  * Add new test result into global array
- * @param {Object} result test result, should be an array or a single JSON object
+ * @param {Array} result test result, should be an array
  */
 function addResult(result) {
-    if(Array.isArray(result)) { // contain multiple results
-        for(let i = 0 ; i < result.length ; i++) {
-            results.push(result[i]);
-        }
-    }
-    else {
-        results.push(result);
+    let i = 0;
+    while (i < result.length) {
+        soloResults.push(result[i]);
+        raftResults.push(result[i + 1]);
+        i = i + 2;
     }
 }
 
@@ -174,14 +260,6 @@ function addResult(result) {
  * @param {JSON} msg start test message
  */
 function beforeTest(msg) {
-    results  = [];
-    resultStats = [];
-    invokeStats = [];
-    queryStats = [];
-    detailedDelayStats = [];
-    txNum = 0;
-    txLastNum = 0;
-
     // conditionally trim beginning and end results for this test run
     if (msg.trim) {
         if (msg.txDuration) {
@@ -196,11 +274,24 @@ function beforeTest(msg) {
 }
 
 /**
+ * Clear the update interval
+ */
+function clearUpdateInter(updateInterval) {
+    // stop reporter
+    clearInterval(updateInterval);
+    txUpdate();
+};
+
+/**
  * Callback for new submitted transaction(s)
  * @param {Number} count count of new submitted transaction(s)
  */
-function submitCallback(count) {
-    txNum += count;
+function submitSoloCallback(count) {
+    soloTxNum += count;
+}
+
+function submitRaftCallback(count) {
+    raftTxNum += count;
 }
 
 /**
@@ -210,27 +301,44 @@ function submitCallback(count) {
  * @param {Object} context blockchain context
  * @return {Promise} promise object
  */
-async function runFixedNumber(msg, cb, context) {
+async function runFixedNumber(msg, cb, contexts) {
     log('Info: client ' + process.pid +  ' start test runFixedNumber()' + (cb.info ? (':' + cb.info) : ''));
-    let rateControl = new RateControl(msg.rateControl, blockchain);
-    rateControl.init(msg);
-    await cb.init(blockchain, context, msg.args);
-    startTime = Date.now();
 
-    let promises = [];
-    while(txNum < msg.numb) {
-        promises.push(cb.run().then((result) => {
-            addResult(result);
-            return Promise.resolve();
-        }));
-        // console.log("Result Stat Length: ", resultStats.length);
-        await rateControl.applyRateControl(startTime, txNum, results, resultStats);
+    try {
+
+        let blockchains = [soloBC, raftBC];
+        let rateControl = new RateControl(msg.rateControl, soloBC);
+        rateControl.init(msg);
+        
+        await cb.init(blockchains, contexts, msg.args);
+        
+        startTime = Date.now();
+
+        let promises = [];
+
+        let txCount = 0;
+        while (txCount < msg.numb) {
+            promises.push(
+                new Promise(async (resolve) => {
+                    await rateControl.applyRateControl(startTime, txCount, null, null);
+
+                    let results = await cb.run();
+                    addResult(results);
+                    resolve();
+                })
+            );
+            ++txCount;
+        }
+
+        await Promise.all(promises);
+        await rateControl.end();
+        await soloBC.releaseContext(contexts[0]);
+        await raftBC.releaseContext(contexts[1]);
+        return Promise.resolve();
+    } catch(err) {
+        return Promise.reject("Failed running fixed number of transactions");
     }
 
-    blockchain.finishIssueTxn();
-    await Promise.all(promises);
-    await rateControl.end();
-    return await blockchain.releaseContext(context);
 }
 
 /**
@@ -268,125 +376,96 @@ async function runDuration(msg, cb, context) {
  * @param {JSON} msg start test message
  * @return {Promise} promise object
  */
-function doTest(msg) {
-    log('doTest() with:', msg);
-    let cb = require(Util.resolvePath(msg.cb));
-    blockchain = new bc(Util.resolvePath(msg.config));
-    let clientIdx = msg.hostIdx * msg.clients + msg.clientIdx;
-    beforeTest(msg);
-    // start an interval to report results repeatedly
-    let txUpdateInter = setInterval(txUpdate, txUpdateTime);
-    /**
-     * Clear the update interval
-     */
-    let clearUpdateInter = function () {
-        // stop reporter
-        if(txUpdateInter) {
-            clearInterval(txUpdateInter);
-            txUpdateInter = null;
-            txUpdate();
-        }
-    };
+async function doTest(msg) {
+    try {
+        log('doTest() with:', msg);
+        let cb = require(Util.resolvePath(msg.cb));
+        soloBC = new bc(Util.resolvePath(msg.soloConfig));
+        raftBC = new bc(Util.resolvePath(msg.raftConfig));
+        let clientIdx = msg.hostIdx * msg.clients + msg.clientIdx;
+        beforeTest(msg);
+        // start an interval to report results repeatedly
+        txUpdateInter = setInterval(txUpdate, txUpdateTime);
 
-    return blockchain.registerBlockProcessing(clientIdx, (err)=>{
-        clearUpdateInter();
-        process.send({type: 'error', data: err.toString()});
-    }).then(()=>{
-        return blockchain.getContext(msg.label, msg.clientargs, clientIdx);
-    }).then((context) => {
-        if(typeof context === 'undefined') {
-            context = {
-                engine : {
-                    submitCallback : submitCallback
-                },
-                clientIdx: clientIdx,
-                op_numb: msg.numb,
-                contractID: msg.contractID
-            };
+        // Start listening for block events from two blockchain networks
+        const soloRegistration = await soloBC.registerBlockProcessing(clientIdx, (err) => {
+            clearUpdateInter(txUpdateInter);
+            process.send({type: 'error', data: err.toString()});
+        });
+
+        const raftRegistration = await raftBC.registerBlockProcessing(clientIdx, (err) => {
+            clearUpdateInter(txUpdateInter);
+            process.send({type: 'error', data: err.toString()});
+        });
+
+        let soloContext = await soloBC.getContext(msg.label, msg.clientargs, clientIdx);
+        let raftContext = await raftBC.getContext(msg.label, msg.clientargs, clientIdx);
+
+        if (soloContext === undefined) {
+            soloContext = {};
         }
-        else {
-            context.engine = {
-                submitCallback : submitCallback
-            };
-            context.clientIdx = clientIdx;
-            context.op_numb = msg.numb;
-            context.contractID = msg.contractID;
+
+        if (raftContext === undefined) {
+            raftContext = {};
         }
-        // round_timeout = setTimeout(() => {
-        //     return blockchain.releaseContext();
-        // }, 4*3600*1000);  // End the test if above 4 hours
+
+        soloContext.engine = {
+            submitCallback: submitSoloCallback
+        };
+        soloContext.clientIdx = clientIdx;
+        soloContext.op_numb = msg.numb;
+        soloContext.contractID = msg.contractID;
+
+        raftContext.engine = {
+            submitCallback: submitRaftCallback
+        };
+        raftContext.clientIdx = clientIdx;
+        raftContext.op_numb = msg.numb;
+        raftContext.contractID = msg.contractID;
+
+        let contexts = [soloContext, raftContext];
+
         if (msg.txDuration) {
-            return runDuration(msg, cb, context);
+            await runDuration(msg, cb, contexts);
         } else {
-            return runFixedNumber(msg, cb, context);
-        }
-    }).then(() => {
-        // clearTimeout(round_timeout);
-        return blockchain.unRegisterBlockProcessing();
-    }).then(() => {
-        clearUpdateInter();
-        return cb.end();
-    }).then(() => {
-        let allStats = [];
-        if (queryStats.length > 0) {
-            allStats.push(queryStats[0]);
-        } else {
-            allStats.push(bc.createNullDefaultTxStats());
+            await runFixedNumber(msg, cb, contexts);
         }
 
-        if (invokeStats.length > 0) {
-            allStats.push(invokeStats[0]);
-        } else {
-            allStats.push(bc.createNullDefaultTxStats());
-        }
+        await soloBC.unRegisterBlockProcessing(soloRegistration.blk_event_hub, soloRegistration.blk_registration);
+        await raftBC.unRegisterBlockProcessing(raftRegistration.blk_event_hub, raftRegistration.blk_registration);
 
-        if (resultStats.length > 0) {
-            allStats.push(resultStats[0]);
-        } else {
-            allStats.push(bc.createNullDefaultTxStats());
-        }
-
-        if (detailedDelayStats.length > 0) {
-            allStats.push(detailedDelayStats[0]);
-        } else {
-            allStats.push(bc.createNullDetailedDelayStats());
-        }
+        clearUpdateInter(txUpdateInter);
+        cb.end();
 
         return Promise.resolve(allStats);
-    }).catch((err) => {
-        clearUpdateInter();
+    } catch (err) {
+        clearUpdateInter(txUpdateInter);
         log('Client ' + process.pid + ': error ' + (err.stack ? err.stack : err));
         return Promise.reject(err);
-    });
+    }
 }
 
 /**
  * Message handler
  */
 process.on('message', function(message) {
-    if(message.hasOwnProperty('type')) {
+    if (message.hasOwnProperty('type')) {
         try {
             switch(message.type) {
-            case 'test': {
-                let result;
-                doTest(message).then((output) => {
-                    result = output;
-                    return Util.sleep(200);
-                }).then(() => {
-                    process.send({type: 'testResult', data: result});
-                });
-                break;
+                case 'test': {
+                    doTest(message).then((output) => {
+                        process.send({type: 'testResult', data: output});
+                    });
+                    break;
+                }
+                default: {
+                    process.send({type: 'error', data: 'unknown message type'});
+                }
             }
-            default: {
-                process.send({type: 'error', data: 'unknown message type'});
-            }
-            }
-        }
-        catch(err) {
+        } catch(err) {
             process.send({type: 'error', data: err.toString()});
         }
-    }
-    else {
+    } else {
         process.send({type: 'error', data: 'unknown message type'});
     }
 });

@@ -36,11 +36,7 @@ const commUtils = require('../comm/util');
 
 //const logger = require('fabric-client/lib/utils.js').getLogger('TestUtil');
 
-let channels = [];
-let cryptodir;
-let ORGS;
-
-module.exports.getChannel = function(name) {
+module.exports.getChannel = function(channels, name) {
     for(let i in channels) {
         if(channels[i].name === name) {
             return channels[i];
@@ -49,7 +45,7 @@ module.exports.getChannel = function(name) {
     return null;
 };
 
-module.exports.getDefaultChannel = function() {
+module.exports.getDefaultChannel = function(channels) {
     return channels[0];
 };
 
@@ -142,13 +138,8 @@ function readAllFiles(dir) {
 module.exports.readFile = readFile;
 
 module.exports.init = function(config_path) {
-    Client.addConfigFile(config_path);
-    const fa = Client.getConfigSetting('fabric');
-    ORGS = fa.network;
-    channels = fa.channel;
-    cryptodir = commUtils.resolvePath(fa.cryptodir);
-};
-
+    return Promise.reject("Not Implemented for getMember()");
+}
 const tlsOptions = {
     trustedRoots: [],
     verify: false
@@ -164,7 +155,7 @@ const tlsOptions = {
  */
 function getMember(username, password, client, userOrg) {
     return Promise.reject("Not Implemented for getMember()");
-    // const caUrl = ORGS[userOrg].ca.url;
+    // const caUrl = network[userOrg].ca.url;
 
     // return client.getUserContext(username, true)
     //     .then((user) => {
@@ -178,20 +169,20 @@ function getMember(username, password, client, userOrg) {
     //             if (!cryptoSuite) {
     //                 cryptoSuite = Client.newCryptoSuite();
     //                 if (userOrg) {
-    //                     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: module.exports.storePathForOrg(ORGS[userOrg].name)}));
+    //                     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: module.exports.storePathForOrg(network[userOrg].name)}));
     //                     client.setCryptoSuite(cryptoSuite);
     //                 }
     //             }
     //             member.setCryptoSuite(cryptoSuite);
 
     //             // need to enroll it with CA server
-    //             const cop = new copService(caUrl, tlsOptions, ORGS[userOrg].ca.name, cryptoSuite);
+    //             const cop = new copService(caUrl, tlsOptions, network[userOrg].ca.name, cryptoSuite);
 
     //             return cop.enroll({
     //                 enrollmentID: username,
     //                 enrollmentSecret: password
     //             }).then((enrollment) => {
-    //                 return member.setEnrollment(enrollment.key, enrollment.certificate, ORGS[userOrg].mspid);
+    //                 return member.setEnrollment(enrollment.key, enrollment.certificate, network[userOrg].mspid);
     //             }).then(() => {
     //                 let skipPersistence = false;
     //                 if (!client.getStateStore()) {
@@ -214,12 +205,16 @@ function getMember(username, password, client, userOrg) {
  * @param {string} userOrg The name of the user's organization.
  * @return {User} The admin user identity.
  */
-function getAdmin(client, userOrg) {
+function getAdmin(client, userOrg, settings) {
+
+    const cryptodir = commUtils.resolvePath(settings.cryptodir);
+    const network = settings.network;
+
     try {
-        if(!ORGS.hasOwnProperty(userOrg)) {
+        if(!network.hasOwnProperty(userOrg)) {
             throw new Error('Could not found ' + userOrg + ' in configuration');
         }
-        const org = ORGS[userOrg];
+        const org = network[userOrg];
         let keyPEM, certPEM;
         if(org.user) {
             keyPEM = fs.readFileSync(commUtils.resolvePath(org.user.key));
@@ -244,7 +239,7 @@ function getAdmin(client, userOrg) {
         }
 
         const cryptoSuite = Client.newCryptoSuite();
-        cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: module.exports.storePathForOrg(ORGS[userOrg].name)}));
+        cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: module.exports.storePathForOrg(network[userOrg].name)}));
         client.setCryptoSuite(cryptoSuite);
 
         return Promise.resolve(client.createUser({
@@ -266,13 +261,17 @@ function getAdmin(client, userOrg) {
  * @param {Client} client The Fabric client object.
  * @return {User} The retrieved orderer admin identity.
  */
-function getOrdererAdmin(client) {
+function getOrdererAdmin(client, settings) {
+
+    const cryptodir = commUtils.resolvePath(settings.cryptodir);
+    const network = settings.network;
+
     try {
-        if(!ORGS.orderers) {
+        if(!network.orderers) {
             throw new Error('Could not found orderer in configuration');
         }
 
-        const orderer = ORGS.orderers[0];
+        const orderer = network.orderers[0];
         let keyPEM, certPEM;
         if(orderer.user) {
             keyPEM = fs.readFileSync(commUtils.resolvePath(orderer.user.key));
@@ -311,11 +310,11 @@ function getOrdererAdmin(client) {
 
 
 
-module.exports.getOrderAdminSubmitter = function(client) {
-    return getOrdererAdmin(client);
+module.exports.getOrderAdminSubmitter = function(client, fabric) {
+    return getOrdererAdmin(client, fabric);
 };
 
-module.exports.getSubmitter = function(client, peerOrgAdmin, org) {
+module.exports.getSubmitter = function(client, peerOrgAdmin, org, fabric) {
     if (arguments.length < 2) {throw new Error('"client" and "test" are both required parameters');}
 
     let peerAdmin, userOrg;
@@ -337,7 +336,7 @@ module.exports.getSubmitter = function(client, peerOrgAdmin, org) {
     }
 
     if (peerAdmin) {
-        return getAdmin(client, userOrg);
+        return getAdmin(client, userOrg, fabric);
     } else {
         return getMember('admin', 'adminpw', client, userOrg);
     }

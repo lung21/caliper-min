@@ -12,7 +12,7 @@
 /* global variables */
 var path = require('path');
 var demoFile = path.join(__dirname, '../output/demo.json');
-var demoInterval = 1;   // interval length(s)
+var demoInterval = 0.5;   // interval length(s)
 var demoXLen = 60;     // default x axis length
 var demoData;
 var demoInterObj = null;
@@ -127,8 +127,8 @@ function demoRefreshData(updates) {
         + ' Fail:' +  demoData.summary.txFail
         + ' Unfinished:' + (demoData.summary.txSub - demoData.summary.txSucc - demoData.summary.txFail)
         + ' ('
-        + ' submited: ' +  sub
-        + ' commited: ' +  (suc + fail)
+        + ' submitted: ' +  sub
+        + ' committed: ' +  (suc + fail)
         + ' succ: ' +  suc
         + ' failed: ' +  fail
         + ')');

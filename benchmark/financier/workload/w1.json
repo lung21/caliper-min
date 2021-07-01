@@ -8,7 +8,7 @@
    "description" : "This is financier benchmark to test invoking functionality",
    "clients": {
      "type": "local",
-     "number": 4
+     "number": 6
    },
    "rounds": [
      {
@@ -17,7 +17,7 @@
        "rateControl": [{
          "type": "fixed-rate",
          "opts": {
-           "tps": 600
+           "tps": 500
          }
        }],
        "arguments": {"nTxn": 1, "nAccount": 100000, "sleepMS": 0, "nWrite": 5, "nRead": 5, "updateSize": 100},

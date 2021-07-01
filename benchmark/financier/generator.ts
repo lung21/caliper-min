@@ -1,10 +1,12 @@
-import { StoreEntry } from 'task-aggregator';
+import { Task } from './types'
 
 let prob = require("prob.js");
 
-export let info: string = "financier's generator";
-let bc: any;
-let ctx: any;
+export let info: string = "Financier's Generator";
+let soloBC: any;
+let raftBC: any;
+let soloCtx: any;
+let raftCtx: any;
 let nTxn: number;
 let nAccount: number;
 let sleepMS: number;
@@ -12,7 +14,6 @@ let nRead: number;
 let nWrite: number;
 let updateSize: number;
 let zipfs: number;
-let persistentFilepath: string;
 
 function getSampler(n: number): any {
     return Math.random() * n;
@@ -73,25 +74,33 @@ function generateTasks(nTxn: number, nAccount: number, sleepMS: number, nRead: n
 
 export async function run() {
 
-    let tasks: any[];
+    let tasks: Task[] = generateTasks(nTxn, nAccount, sleepMS, nRead, nWrite, updateSize, zipfs);
+    let output: any[] = [];
+    let statuses: any[];
 
-    if (persistentFilepath === undefined) {
-        tasks = generateTasks(nTxn, nAccount, sleepMS, nRead, nWrite, updateSize, zipfs);
-        ctx.tasks = tasks;
-    } else {
-        tasks = ctx.tasks;
-    }
+    // Send the same task to solo-based and raft-based blockchain networks, respectively
+    statuses = await soloBC.invokeSmartContract(soloCtx, soloCtx.contractID, 'v0', tasks);
+    output.push(...statuses);
+    statuses = await raftBC.invokeSmartContract(raftCtx, raftCtx.contractID, 'v0', tasks);
+    output.push(...statuses);
 
-    return bc.invokeSmartContract(ctx, ctx.contractID, 'v0', tasks, 30);
+    return output;
 }
 
-export function init(blockchain: any, context: any, args: any) {
-    if (args.nTxn === undefined || args.nAccount === undefined) {
+export function init(blockchains: any[], contexts: any[], args: any) {
+    if (blockchains === undefined || contexts === undefined || args === undefined) {
         return Promise.reject("Required more arguments");
     }
 
-    bc = blockchain;
-    ctx = context;
+    if (blockchains.length !== 2) {
+        return Promise.reject("Required more arguments");
+    }
+
+    soloBC = blockchains[0];
+    raftBC = blockchains[1];
+
+    soloCtx = contexts[0];
+    raftCtx = contexts[1];
     nTxn = args.nTxn;
     sleepMS = args.sleepMS;
     nAccount = args.nAccount;
@@ -101,10 +110,6 @@ export function init(blockchain: any, context: any, args: any) {
     
     if (args.zipfs !== undefined) { 
         zipfs = args.zipfs;
-    }
-
-    if (args.persistentFilepath !== undefined) {
-        persistentFilepath = args.persistentFilepath;
     }
 
     return Promise.resolve();

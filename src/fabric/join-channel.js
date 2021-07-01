@@ -44,7 +44,7 @@ let ORGS;
  * @param {string} channelName The name of the channel.
  * @return {Promise} The return promise.
  */
-function joinChannel(org, channelName) {
+function joinChannel(org, channelName, settings) {
     const client = new Client();
     const channel = client.newChannel(channelName);
 
@@ -72,22 +72,22 @@ function joinChannel(org, channelName) {
     }).then((store) => {
         client.setStateStore(store);
 
-        return testUtil.getOrderAdminSubmitter(client);
-    }).then((admin) => {
+        return testUtil.getOrderAdminSubmitter(client, settings);
+    }).then(async (admin) => {
         tx_id = client.newTransactionID();
         let request = {
             txId : tx_id
         };
 
-        return channel.getGenesisBlock(request);
+        return await channel.getGenesisBlock(request);
     }).then((block) =>{
         genesis_block = block;
 
         // get the peer org's admin required to send join channel requests
         client._userContext = null;
 
-        return testUtil.getSubmitter(client, true /* get peer org admin */, org);
-    }).then((admin) => {
+        return testUtil.getSubmitter(client, true /* get peer org admin */, org, settings);
+    }).then(async (admin) => {
         //the_user = admin;
         for (let key in ORGS[org]) {
             if (ORGS[org].hasOwnProperty(key)) {
@@ -106,7 +106,6 @@ function joinChannel(org, channelName) {
             }
         }
         var promises = [];
-        promises.push(new Promise(resolve => setTimeout(resolve, 10000)));
 
         tx_id = client.newTransactionID(true);
         let request = {
@@ -116,7 +115,7 @@ function joinChannel(org, channelName) {
         };
         let sendPromise = channel.joinChannel(request);
         promises.push(sendPromise);
-        return Promise.all(promises);
+        return await Promise.all(promises);
     }).then((results) => {
         let peers_results = results.pop();
         for(let i in peers_results) {
@@ -126,7 +125,7 @@ function joinChannel(org, channelName) {
             } else {
                 throw new Error('Failed to join peer to the channel ' + channelName + 
                                 "with peer result " + peer_result +
-                                 " with peer response msg" + peer_result.response + " and status " + peer_result.response.status);
+                                 " with peer response msg " + peer_result.response);
             }
         }
     }).catch((err)=>{
@@ -137,13 +136,12 @@ function joinChannel(org, channelName) {
 }
 
 module.exports.run = function (config_path) {
-    Client.addConfigFile(config_path);
-    const fabric = Client.getConfigSetting('fabric');
+    const fabric = require(config_path).fabric;
     let channels = fabric.channel;
     if(!channels || channels.length === 0) {
         return Promise.resolve();
     }
-    ORGS = Client.getConfigSetting('fabric').network;
+    ORGS = fabric.network;
     return new Promise(function(resolve, reject) {
         const t = global.tapeObj;
         t.comment('Join channel......');
@@ -169,7 +167,7 @@ module.exports.run = function (config_path) {
                 // Join channel concurrently
                 let promises = [];
                 channel.organizations.forEach((org, index) => {
-                    promises.push(joinChannel(org, channel.name));
+                    promises.push(joinChannel(org, channel.name, fabric));
                 });
                 return Promise.all(promises).then(()=>{
                     t.pass('Successfully joined ' + channel.name);

@@ -168,13 +168,13 @@ class Blockchain {
         }, err_cb);
     }
 
-    unRegisterBlockProcessing() {
-        console.log("Unregistered Block processing...");
-        if (this.clientIdx ===0 ) {
+    unRegisterBlockProcessing(blk_event_hub, blk_registration) {
+        console.log("Unregistering for block processing...");
+        if (this.clientIdx === 0) {
             console.log("Avg # of Txns in Block: ", this.txn_count / this.blk_count);
         }
         clearTimeout(this.finish_timeout);
-        return this.bcObj.unRegisterBlockProcessing();
+        return this.bcObj.unRegisterBlockProcessing(blk_event_hub, blk_registration);
     }
 
     /**
@@ -339,7 +339,7 @@ class Blockchain {
     * @param {Boolean} detail indicates whether to keep detailed information
     * @return {JSON} txStatistics JSON object
     */
-    getDefaultTxStats(results, detail) {
+    static getDefaultTxStats(results, detail) {
         let succ = 0, fail = 0, delay = 0;
         let minFinal, maxFinal, minCreate, maxCreate;
         let minDelay = 100000, maxDelay = 0;
@@ -363,7 +363,7 @@ class Blockchain {
 
             if(stat.IsCommitted()) {
                 succ++;
-                let final = stat.GetTimeFinal();
+                let final = stat.Get("time_commit");
                 let d     = (final - create) / 1000;
                 if(typeof minFinal === 'undefined') {
                     minFinal = final;
@@ -413,7 +413,7 @@ class Blockchain {
     * @param {Boolean} detail indicates whether to keep detailed information
     * @return {JSON} txStatistics JSON object
     */
-    getDetailedDelayStats(results, detail) {
+    static getDetailedDelayStats(results, detail) {
         let s2e_delay_sum = 0; // delay from submission to endorsement
         let e2o_delay_sum = 0;  // delay from endorsement to ordering
         let o2f_delay_sum = 0;  // delay from ordering to commit
@@ -514,32 +514,27 @@ class Blockchain {
         }
     }
 
-    /**
-     * create a 'null' txStatistics object
-     * @return {JSON} 'null' txStatistics object
-     */
     static createNullDefaultTxStats() {
-        return {'succ': 0, 'fail': 0, 
-            'create' : {'min' : 0, 'max' : 0},    
-            'final'  : {'min' : 0,  'max' : 0 },
-            'delay'  : {'min' : 0,  'max' : 0, 'sum' : 0, 'detail': []},
-            'out' : []
+        return {
+            succ: 0,
+            fail: 0, 
+            create: {min: 0, max: 0},    
+            final  : {min: 0,  max: 0 },
+            delay  : {min: 0,  max : 0, sum : 0, detail: []},
+            out : []
         };
     }
 
-    /**
-     * create a 'null' txStatistics object
-     * @return {JSON} 'null' txStatistics object
-     */
+
     static createNullDetailedDelayStats() {
         let stats = {
-            'succ' : 0,
-            's2e_sum' : 0,
-            'e2o_sum' : 0,
-            'o2f_sum' : 0,
-            'delay_sum' : 0
+            succ : 0,
+            s2e_sum : 0,
+            e2o_sum : 0,
+            o2f_sum : 0,
+            delay_sum : 0
         };
-        return stats;;
+        return stats;
     }
 
     static mergeDetailedDelayStats(results) {

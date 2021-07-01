@@ -35,6 +35,12 @@ class TxStatus {
         };
     }
 
+    clone() {
+        let newStatus = new TxStatus();
+        newStatus.status = { ...this.status };
+        return newStatus;
+    }
+
     /**
      * Getter of the tx's id
      * @return {string}, id

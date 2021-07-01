@@ -25,11 +25,12 @@ const Blockchain = require('./blockchain.js');
 const Client  = require('./client/client.js');
 const Util = require('./util.js');
 const log = Util.log;
-let blockchain, monitor, report, client;
+let soloBC, raftBC, monitor, report, client;
 let resultsbyround = [];    // results table for each test round
 let round = 0;              // test round
 let demo = require('../gui/src/demo.js');
-let absConfigFile, absNetworkFile;
+const { loadRemoteVersion } = require('solc');
+let absConfigFile, absSoloNetFile, absRaftNetFile;
 let absCaliperDir = path.join(__dirname, '..', '..');
 let statPath;
 /**
@@ -66,11 +67,11 @@ function ensureDirectoryExistence(filePath) {
  */
 function getResultTitle() {
     // temporarily remove percentile return ['Name', 'Succ', 'Fail', 'Send Rate', 'Max Latency', 'Min Latency', 'Avg Latency', '75%ile Latency', 'Throughput'];
-    return ['Name', 'Operation', 'Succ', 'Fail', 'Send Rate', 'Max Latency', 'Min Latency', '95%ile Latency', '99%ile Latency', 'Avg Latency', 'Throughput'];
+    return ['Name', 'Network', 'Operation', 'Succ', 'Fail', 'Send Rate', 'Max Latency', 'Min Latency', '95%ile Latency', '99%ile Latency', 'Avg Latency', 'Throughput'];
 }
 
 function getDetailedDelayTitle() {
-    return ['Name',  'Succ', 'Avg S2E', 'Avg E2O', 'Avg O2F', 'Avg Latency'];
+    return ['Name', 'Network', 'Operation', 'Succ', 'Avg S2E', 'Avg E2O', 'Avg O2F', 'Avg Latency'];
 }
 
 function getDetailedDelayValue(r) {
@@ -78,6 +79,8 @@ function getDetailedDelayValue(r) {
     let obj = {};
     try {
         row.push(r.label);
+        row.push(r.network_name);
+        row.push(r.operation);
 
         row.push(r.succ);
         obj.succ=r.succ;
@@ -95,7 +98,7 @@ function getDetailedDelayValue(r) {
         obj.sum=(r.delay_sum / r.succ).toFixed(3);
     }
     catch (err) {
-        row = [r.label, 0, 'N/A', 'N/A', 'N/A', 'N/A'];
+        row = [r.label, 0, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
     }
 
     return [row, obj]
@@ -111,6 +114,7 @@ function getResultValue(r) {
     let obj = {}
     try {
         row.push(r.label);
+        row.push(r.network_name);
         row.push(r.operation);
 
         obj.succ = r.succ;
@@ -118,7 +122,7 @@ function getResultValue(r) {
 
         row.push(r.fail);
         obj.fail = r.fail;
-        if (r.create.max === r.create.min)  {
+        if (r.create.max.toFixed(3) === r.create.min.toFixed(3))  {
           let send_rate = (r.succ + r.fail);
           obj.send_rate = send_rate;
           row.push( send_rate + ' tps') 
@@ -151,20 +155,19 @@ function getResultValue(r) {
         row.push((r.delay.sum / r.succ).toFixed(3) + ' s');
         obj.avg_delay=(r.delay.sum / r.succ).toFixed(3);
 
-        // Comment out temporarily for correct metrics
-        // if (r.final.max === r.final.min) { 
-        //     row.push(r.succ + ' tps');
-        //     obj.thruput=r.succ;
-        // } else {
+        if ((r.final.max / 1.0).toFixed(3) === (r.final.min / 1.0).toFixed(3)) { 
+            row.push(r.succ + ' tps');
+            obj.thruput=r.succ;
+        } else {
             let thruput=((r.succ / (r.final.max - r.create.min)).toFixed(2));
             obj.thruput = thruput;
             row.push(thruput + ' tps');
-        // }
+        }
     }
     catch (err) {
         // temporarily remove percentile row = [r.label, 0, 0, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
         console.log(err);
-        row = [r.label, 0, 0, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
+        row = [r.label, 0, 0, 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'];
         obj = {};
     }
 
@@ -195,90 +198,115 @@ function printResultsByRound() {
  *     final  : {min:, max: },            // min/max time when txns were committed
  *     delay  : {min:, max: , sum:, detail:[]},     // min/max/sum of txns' end2end delay, as well as all txns' delay
  * }
- * @param {Array} results array of 3-value array [queryStat, invokeStat, overallStat]
+ * 
+ * result = {
+ *      network_name: {
+ *          
+ * 
+ *      }
+ * }
+ * 
+ * @param {Array} results object of results
  * @param {String} label label of the test round
  * @return {Promise} promise object
  */
 function processResult(results, label){
-    try{
-        var stat_json = JSON.parse(fs.readFileSync(statPath));
-        stat_json[label]={}
+    try {
+        let stat_json = JSON.parse(fs.readFileSync(statPath));
+        stat_json[label] = {};
 
-        let resultTable = [];
-        resultTable.push(getResultTitle());
+        let all_stats = {};
+        all_stats[label] = {};
 
-        let query_results = [];
-        let invoke_results = [];
-        let overall_results = [];
-        let detailed_delay_results = [];
-        
-        results.forEach(function(element) {
-            query_results.push(element[0]);
-            invoke_results.push(element[1]);
-            overall_results.push(element[2]);
-            detailed_delay_results.push(element[3]);
+        results.forEach((result) => {
+            for (let [network_name, network_stats] of Object.entries(result)) {
+
+                if (all_stats[label][network_name] === undefined) all_stats[label][network_name] = {};
+
+                for (let [stats_name, stats] of Object.entries(network_stats)) {
+                    let merged_stats = [];
+                    if (all_stats[label][network_name][stats_name] !== undefined) {
+                        merged_stats.push(all_stats[label][network_name][stats_name]);
+                        merged_stats.push(stats);
+
+                        if (stats_name === 'detailed_delay_stats') {
+                            Blockchain.mergeDetailedDelayStats(merged_stats);
+                            stats = merged_stats[0];
+                        } else {
+                            Blockchain.mergeDefaultTxStats(merged_stats);
+                            stats = merged_stats[0];
+                        }
+
+                    }
+
+                    all_stats[label][network_name][stats_name] = stats;
+                }
+            }
         });
 
-        // For query stats
-        let query_stats;
-        if(Blockchain.mergeDefaultTxStats(query_results) === 1) {
-            query_stats = query_results[0];
-            query_stats.label = label;
-            query_stats.operation = "query";
-            let result = getResultValue(query_stats);
-            resultTable.push(result[0]);
-            stat_json[label]['query'] = result[1];
-        }
 
-        // For invoke stats
-        let invoke_stats;
-        if(Blockchain.mergeDefaultTxStats(invoke_results) === 1) {
-            invoke_stats = invoke_results[0];
-            invoke_stats.label = label;
-            invoke_stats.operation = "invoke";
-            let result = getResultValue(invoke_stats);
-            resultTable.push(result[0]);
-            stat_json[label]['invoke'] = result[1];
-        }
+        let result_table = [];
+        let detailed_stat_table = [];
+        result_table.push(getResultTitle());
+        detailed_stat_table.push(getDetailedDelayTitle());
 
-        // For overall stats
-        let overall_stats;
-        if(Blockchain.mergeDefaultTxStats(overall_results) === 0) {
-            overall_stats = Blockchain.createNullDefaultTxStats();
-        } else {
-            overall_stats = overall_results[0];
+        for (let [network_name, network_stats] of Object.entries(all_stats[label])) {
+
+            if (stat_json[label][network_name] === undefined) stat_json[label][network_name] = {};
+
+            for (let [stats_name, stats] of Object.entries(network_stats)) {
+
+                stats.label = label;
+                stats.network_name = network_name;
+
+                if (stats_name === 'query_stats') {
+                    stats.operation = 'query';
+                    let result = getResultValue(stats);
+                    result_table.push(result[0]);
+                    stat_json[label][network_name]['query'] = result[1];
+                }
+
+                if (stats_name === 'invoke_stats') {
+                    stats.operation = 'invoke';
+                    let result = getResultValue(stats);
+                    result_table.push(result[0]);
+                    stat_json[label][network_name]['invoke'] = result[1];
+                }
+
+                if (stats_name === 'overall_stats') {
+                    stats.operation = 'overall';
+                    let result = getResultValue(stats);
+                    result_table.push(result[0]);
+                    stat_json[label][network_name]['overall'] = result[1];
+                }
+
+                if (stats_name === 'detailed_delay_stats') {
+                    stats.operation = 'invoke';
+                    let result = getDetailedDelayValue(stats);
+                    detailed_stat_table.push(result[0]);
+                    stat_json[label][network_name]['detail'] = result[1];
+                }
+            }
         }
-        overall_stats.label = label;
-        overall_stats.operation = "overall";
-        let result = getResultValue(overall_stats);
-        resultTable.push(result[0]);
-        stat_json[label]['overall'] = result[1];
 
         log('###test result:###');
-        // console.log("Result Table: ", resultTable);
-        printTable(resultTable);
-
+        printTable(result_table);
         // For the latency breakdown
-        if (Blockchain.mergeDetailedDelayStats(detailed_delay_results) === 1) {
-            let detailed_delay_stats = detailed_delay_results[0];
-            detailed_delay_stats.label = label;
-            let detailed_stat_table = [];
-            detailed_stat_table.push(getDetailedDelayTitle());
-            let detailedResult=getDetailedDelayValue(detailed_delay_stats);
-            detailed_stat_table.push(detailedResult[0]);
-            stat_json[label]['detail'] = detailedResult[1];
-            printTable(detailed_stat_table);
-        }
+        printTable(detailed_stat_table);
 
-        fs.writeFileSync(statPath, JSON.stringify(stat_json, null, 4));
+        let output_json = {};
 
-        if(resultsbyround.length === 0) {
-            resultsbyround.push(resultTable[0].slice(0));
-        }
-        if(resultTable.length > 1) {
-            let result = getResultValue(overall_stats);
-            resultsbyround.push(result[0]);
-        }
+        output_json[label] = stat_json[label]['simul'];
+
+        fs.writeFileSync(statPath, JSON.stringify(output_json, null, 4));
+
+        // if(resultsbyround.length === 0) {
+        //     resultsbyround.push(resultTable[0].slice(0));
+        // }
+        // if(resultTable.length > 1) {
+        //     let result = getResultValue('overall_stats');
+        //     resultsbyround.push(result[0]);
+        // }
 
         return Promise.resolve();
     }
@@ -302,7 +330,8 @@ function defaultTest(args, clientArgs, contractID, final) {
         let testLabel   = args.label;
         let testRounds  = args.txDuration ? args.txDuration : args.txNumber;
         let tests = []; // array of all test rounds
-        let configPath = path.relative(absCaliperDir, absNetworkFile);
+        let soloCfgPath = path.relative(absCaliperDir, absSoloNetFile);
+        let raftCfgPath = path.relative(absCaliperDir, absRaftNetFile);
         for(let i = 0 ; i < testRounds.length ; i++) {
             let msg = {
                 type: 'test',
@@ -311,7 +340,8 @@ function defaultTest(args, clientArgs, contractID, final) {
                 trim: args.trim ? args.trim : 0,
                 args: args.arguments,
                 cb  : args.callback,
-                config: configPath,
+                soloConfig: soloCfgPath,
+                raftConfig: raftCfgPath,
                 contractID: contractID
             };
             // condition for time based or number based test driving
@@ -334,27 +364,22 @@ function defaultTest(args, clientArgs, contractID, final) {
                 item.roundIdx = round; // propagate round ID to clients
                 demo.startWatch(client);
 
-                return client.startTest(item, clientArgs, processResult, testLabel).then( () => {
-                    demo.pauseWatch();
-                    return blockchain.getBlockNumAsync();
-                }).then( (blk_num) => {
-                    t.pass('passed \'' + testLabel + '\' testing' + " with " + blk_num + " blocks");
-                    let stat_json = JSON.parse(fs.readFileSync(statPath));
-                    stat_json[testLabel]['blk_num'] = blk_num;
-                    fs.writeFileSync(statPath, JSON.stringify(stat_json, null, 4));
-                }).then( () => {
-                    if(final && testIdx === tests.length) {
+                return client.startTest(item, clientArgs, processResult, testLabel).then(async () => {
+                    demo.stopWatch();
+                    // return raftBC.getBlockNumAsync();
+                    // t.pass('passed \'' + testLabel + '\' testing' + " with " + blk_num + " blocks");
+                    // let stat_json = JSON.parse(fs.readFileSync(statPath));
+                    // stat_json[testLabel]['blk_num'] = blk_num;
+                    // fs.writeFileSync(statPath, JSON.stringify(stat_json, null, 4));
+                }).then(() => {
+                    if (final && testIdx === tests.length) {
                         return Promise.resolve();
-                    }
-                    else {
+                    } else {
                         log('wait 5 seconds for next round...');
-                        return Util.sleep(5000).then( () => {
-                            //return monitor.restart();
-							return;
-                        });
+                        return Util.sleep(5000)
                     }
                 }).catch( (err) => {
-                    demo.pauseWatch();
+                    demo.stopWatch();
                     t.fail('failed \''  + testLabel + '\' testing, ' + (err.stack ? err.stack : err));
                     return Promise.reject(err);   // Not allow to continue with next round
                 });
@@ -373,15 +398,17 @@ function defaultTest(args, clientArgs, contractID, final) {
  * @param {String} configFile path of the test configuration file
  * @param {String} networkFile path of the blockchain configuration file
  */
-module.exports.run = function(configFile, networkFile, resultFile) {
+module.exports.run = function(configFile, networkFiles, resultFile) {
     test('#######Caliper Test######', (t) => {
         global.tapeObj = t;
         absConfigFile  = Util.resolvePath(configFile);
-        absNetworkFile = Util.resolvePath(networkFile);
+        absSoloNetFile = Util.resolvePath(networkFiles[0]);
+        absRaftNetFile = Util.resolvePath(networkFiles[1]);
 
         initStatJson(absConfigFile, resultFile);
 
-        blockchain = new Blockchain(absNetworkFile);
+        soloBC = new Blockchain(absSoloNetFile);
+        raftBC = new Blockchain(absRaftNetFile);
         //monitor = new Monitor(absConfigFile);
         client  = new Client(absConfigFile);
         //createReport();
@@ -405,18 +432,20 @@ module.exports.run = function(configFile, networkFile, resultFile) {
             }
         });
         if (!config.hasOwnProperty('contracts')) {
-          reject(new Error("No smart contract config in client config file."));
+            reject(new Error("No smart contract config in client config file."));
         } 
         let contracts_config = config.contracts;
-        startPromise.then(() => {
-            return blockchain.init();
-        }).then( () => {
-            return blockchain.installSmartContract(contracts_config);
-        }).then( (contract_id) => {
+        startPromise.then(async () => {
+            await soloBC.init();
+            await raftBC.init();
+            await soloBC.installSmartContract(contracts_config);
+            return await raftBC.installSmartContract(contracts_config);
+        }).then((contract_id) => {
             contractID = contract_id;
             log("Installed ContractID: " + contractID + "\n" );
-            return client.init().then((number)=>{
-                return blockchain.prepareClients(number);
+            return client.init().then(async (number) => {
+                await soloBC.prepareClients(number);
+                return await raftBC.prepareClients(number);
             });
         }).then( (clientArgs) => {
 
@@ -431,10 +460,8 @@ module.exports.run = function(configFile, networkFile, resultFile) {
             }, Promise.resolve());
         }).then( () => {
             log('----------finished test----------\n');
-            printResultsByRound();
-
-             demo.stopWatch("");
-             return Promise.resolve();
+            // printResultsByRound();
+            return Promise.resolve();
         }).then( () => {
             client.stop();
             if (config.hasOwnProperty('command') && config.command.hasOwnProperty('end')){
@@ -447,7 +474,6 @@ module.exports.run = function(configFile, networkFile, resultFile) {
             process.exit();
         // }).then( () => {
         }).catch( (err) => {
-            demo.stopWatch();
             log('unexpected error, ' + (err.stack ? err.stack : err));
             let config = require(absConfigFile);
             if (config.hasOwnProperty('command') && config.command.hasOwnProperty('end')){

@@ -17,17 +17,19 @@ const impl_instantiate = require('./instantiate-chaincode.js');
 const BlockchainInterface = require('../comm/blockchain-interface.js');
 const commUtils = require('../comm/util');
 const TxStatus = require('../comm/transaction');
+const Client = require('fabric-client');
 
 /**
  * Implements {BlockchainInterface} for a Fabric backend.
  */
-class Fabric extends BlockchainInterface{
+class Fabric extends BlockchainInterface {
     /**
      * Create a new instance of the {Fabric} class.
      * @param {string} config_path The path of the Fabric network configuration file.
      */
     constructor(config_path) {
         super(config_path);
+        Client.setConfigSetting('request-timeout', 120000);
     }
 
     /**
@@ -35,8 +37,6 @@ class Fabric extends BlockchainInterface{
      * @return {Promise} The return promise.
      */
     init() {
-        util.init(this.configPath);
-        e2eUtils.init(this.configPath);
         return impl_create.run(this.configPath).then(() => {
             return impl_join.run(this.configPath);
         })
@@ -46,20 +46,21 @@ class Fabric extends BlockchainInterface{
             });
     }
 
-    registerBlockProcessing(clientIdx, callback, err_cb) {
-        util.init(this.configPath);
-        e2eUtils.init(this.configPath);
-
-        return e2eUtils.registerBlockProcessing(clientIdx, callback, err_cb);
+    async registerBlockProcessing(clientIdx, callback, err_cb) {
+        let settings  = require(this.configPath).fabric;
+        let channels = settings.channel;
+        return await e2eUtils.registerBlockProcessing(settings, channels, clientIdx, callback, err_cb);
     }
 
-    unRegisterBlockProcessing() {
-        return e2eUtils.unRegisterBlockProcessing();
+    async unRegisterBlockProcessing(blk_event_hub, blk_registration) {
+        await e2eUtils.unRegisterBlockProcessing(blk_event_hub, blk_registration);
     }
 
 
     getBlockNumAsync() {
-        return e2eUtils.getBlockNumAsync();
+        let settings  = require(this.configPath).fabric;
+        let channels = settings.channel;
+        return e2eUtils.getBlockNumAsync(settings, channels);
     }
 
     /**
@@ -84,24 +85,22 @@ class Fabric extends BlockchainInterface{
      * @return {object} The assembled Fabric context.
      */
     getContext(name, args, clientIdx) {
-        util.init(this.configPath);
-        e2eUtils.init(this.configPath);
-
-        let config  = require(this.configPath);
-        let context = config.fabric.context;
+        let settings  = require(this.configPath).fabric;
+        let channels = settings.channel;
+        let context = settings.context;
         let channel;
         if(typeof context === 'undefined') {
-            channel = util.getDefaultChannel();
+            channel = util.getDefaultChannel(channels);
         }
         else{
-            channel = util.getChannel(context[name]);
+            channel = util.getChannel(channels, context[name]);
         }
 
         if(!channel) {
             return Promise.reject(new Error('could not find context\'s information in config file'));
         }
 
-        return e2eUtils.getcontext(channel, clientIdx);
+        return e2eUtils.getcontext(settings, channel, clientIdx);
 
     }
 

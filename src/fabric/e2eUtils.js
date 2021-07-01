@@ -30,28 +30,9 @@ const util = require('util');
 const Client = require('fabric-client');
 const testUtil = require('./util.js');
 
-let ORGS;
-
-let tx_id = null;
-let the_user = null;
-
-let blk_event_hub;
-let blk_registration;
-
-/**
- * Initialize the Fabric client configuration.
- * @param {string} config_path The path of the Fabric network configuration file.
- */
-function init(config_path) {
-    Client.addConfigFile(config_path);
-    ORGS = Client.getConfigSetting('fabric').network;
-}
-module.exports.init = init;
-
-function getBlockNumAsync() {
-    Client.setConfigSetting('request-timeout', 120000);
-
-    let channel = testUtil.getDefaultChannel();
+function getBlockNumAsync(settings, channels) {
+    const network = settings.network;
+    let channel = testUtil.getDefaultChannel(channels);
     if(channel === null) {
         return Promise.reject(new Error('could not find channel in config'));
     }
@@ -63,22 +44,22 @@ function getBlockNumAsync() {
     const client = new Client();
     channel = client.newChannel(channel_name);
 
-    const orgName = ORGS[userOrg].name;
+    const orgName = network[userOrg].name;
     const cryptoSuite = Client.newCryptoSuite();
     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(orgName)}));
     client.setCryptoSuite(cryptoSuite);
 
     let oidx = 0;
-    const caRootsPath = ORGS.orderers[oidx].tls_cacerts;
+    const caRootsPath = network.orderers[oidx].tls_cacerts;
     let data = fs.readFileSync(commUtils.resolvePath(caRootsPath));
     let caroots = Buffer.from(data).toString();
 
     channel.addOrderer(
         client.newOrderer(
-            ORGS.orderers[oidx].url,
+            network.orderers[oidx].url,
             {
                 'pem': caroots,
-                'ssl-target-name-override': ORGS.orderers[0]['server-hostname']
+                'ssl-target-name-override': network.orderers[0]['server-hostname']
             }
         )
     );
@@ -89,55 +70,52 @@ function getBlockNumAsync() {
         path: testUtil.storePathForOrg(orgName)
     }).then((store) => {
         client.setStateStore(store);
-        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg);
-    }).then((admin) => {
-        the_user = admin;
-        for(let org in ORGS) {
-            if(ORGS.hasOwnProperty(org) && org.indexOf('org') === 0) {
-                for (let key in ORGS[org]) {
-                    if(ORGS[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
-                        let data = fs.readFileSync(commUtils.resolvePath(ORGS[org][key].tls_cacerts));
+        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg, settings);
+    }).then(async (admin) => {
+        for(let org in network) {
+            if(network.hasOwnProperty(org) && org.indexOf('org') === 0) {
+                for (let key in network[org]) {
+                    if(network[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
+                        let data = fs.readFileSync(commUtils.resolvePath(network[org][key].tls_cacerts));
                         let peer = client.newPeer(
-                            ORGS[org][key].requests,
+                            network[org][key].requests,
                             {
                                 pem: Buffer.from(data).toString(),
-                                'ssl-target-name-override': ORGS[org][key]['server-hostname']
+                                'ssl-target-name-override': network[org][key]['server-hostname']
                             });
                         channel.addPeer(peer);
-                        if(org === userOrg) {
-                           blk_event_hub = channel.newChannelEventHub(peer);
-                        }
                     }
                 }
             }
         }
 
-        return channel.initialize();
+        return await channel.initialize();
     }, (err) => {
         throw new Error('Failed to enroll user \'admin\'. ' + err);
-    }).then(() => {
-      return channel.queryInfo();    
+    }).then(async () => {
+        return await channel.queryInfo();    
     }).then((info)=>{
-      return info.height.low;
+        return info.height.low;
     });
 }
 module.exports.getBlockNumAsync = getBlockNumAsync;
 
-function unRegisterBlockProcessing() {
+async function unRegisterBlockProcessing(blk_event_hub, blk_registration) {
     commUtils.log("Unregister the block event for Fabric. ");
-    blk_event_hub.unregisterBlockEvent(blk_registration, true);
-    blk_event_hub.disconnect();
-    return Promise.resolve();
+    await blk_event_hub.unregisterBlockEvent(blk_registration, true);
+    await blk_event_hub.disconnect();
 }
+
 module.exports.unRegisterBlockProcessing = unRegisterBlockProcessing;
 
-function registerBlockProcessing(clientIdx, callback, err_cb) {
-    Client.setConfigSetting('request-timeout', 120000);
-
-    let channel = testUtil.getDefaultChannel();
+function registerBlockProcessing(settings, channels, clientIdx, callback, err_cb) {
+    const network = settings.network;
+    let channel = testUtil.getDefaultChannel(channels);
+    
     if(channel === null) {
         return Promise.reject(new Error('could not find channel in config'));
     }
+
     const channel_name = channel.name;
 
     let idx = clientIdx % channel.organizations.length;
@@ -146,60 +124,59 @@ function registerBlockProcessing(clientIdx, callback, err_cb) {
     const client = new Client();
     channel = client.newChannel(channel_name);
 
-    const orgName = ORGS[userOrg].name;
+    const orgName = network[userOrg].name;
     const cryptoSuite = Client.newCryptoSuite();
     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(orgName)}));
     client.setCryptoSuite(cryptoSuite);
 
-    let oidx = clientIdx % ORGS.orderers.length;
-    const caRootsPath = ORGS.orderers[oidx].tls_cacerts;
+    let oidx = clientIdx % network.orderers.length;
+    const caRootsPath = network.orderers[oidx].tls_cacerts;
     let data = fs.readFileSync(commUtils.resolvePath(caRootsPath));
     let caroots = Buffer.from(data).toString();
 
     channel.addOrderer(
         client.newOrderer(
-            ORGS.orderers[oidx].url,
+            network.orderers[oidx].url,
             {
                 'pem': caroots,
-                'ssl-target-name-override': ORGS.orderers[0]['server-hostname']
+                'ssl-target-name-override': network.orderers[0]['server-hostname']
             }
         )
     );
-    
+
     return Client.newDefaultKeyValueStore({
         path: testUtil.storePathForOrg(orgName)
     }).then((store) => {
         client.setStateStore(store);
-        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg);
-    }).then((admin) => {
-        the_user = admin;
+        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg, settings);
+    }).then(async (admin) => {
+        let blk_event_hub; 
 
-        for(let org in ORGS) {
-            if(ORGS.hasOwnProperty(org) && org.indexOf('org') === 0) {
-                for (let key in ORGS[org]) {
-                    if(ORGS[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
-                        let data = fs.readFileSync(commUtils.resolvePath(ORGS[org][key].tls_cacerts));
+        for(let org in network) {
+            if(network.hasOwnProperty(org) && org.indexOf('org') === 0) {
+                for (let key in network[org]) {
+                    if(network[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
+                        let data = fs.readFileSync(commUtils.resolvePath(network[org][key].tls_cacerts));
                         let peer = client.newPeer(
-                            ORGS[org][key].requests,
+                            network[org][key].requests,
                             {
                                 pem: Buffer.from(data).toString(),
-                                'ssl-target-name-override': ORGS[org][key]['server-hostname']
+                                'ssl-target-name-override': network[org][key]['server-hostname']
                             });
                         channel.addPeer(peer);
                         if(org === userOrg) {
                            blk_event_hub = channel.newChannelEventHub(peer);
+                           break;
                         }
                     }
                 }
             }
         }
 
-        return channel.initialize();
-    }, (err) => {
-        throw new Error('Failed to enroll user \'admin\'. ' + err);
-    }).then(() => {
-        blk_registration = blk_event_hub.registerBlockEvent((block) => {
-            var process = require('process');
+        await channel.initialize();
+
+        let blk_registration = blk_event_hub.registerBlockEvent((block) => {
+
             // commUtils.log("Received Block " + block.header.number + " with " + block.data.data.length + " transactions from Process " + process.pid);
             let valid_txnIds = [];
             let invalid_txnIds = [];
@@ -224,10 +201,9 @@ function registerBlockProcessing(clientIdx, callback, err_cb) {
         },
             {unregister: false, disconnect: false}
         );
-        blk_event_hub.connect(true);
-        Promise.resolve();
-    }).then(()=>{
-        return Promise.resolve();
+
+        await blk_event_hub.connect(true);
+        return Promise.resolve({ blk_event_hub, blk_registration });
     }).catch((err) => {
         return Promise.reject(err);
     });    
@@ -242,42 +218,42 @@ module.exports.registerBlockProcessing = registerBlockProcessing;
  * @param {object} chaincode The chaincode object from the configuration file.
  * @return {Promise} The return promise.
  */
-function installChaincode(org, chaincode) {
-    Client.setConfigSetting('request-timeout', 60000);
+function installChaincode(settings, org, chaincode) {
+    const network = settings.network;
     const channel_name = chaincode.channel;
 
     const client = new Client();
     const channel = client.newChannel(channel_name);
 
-    const orgName = ORGS[org].name;
+    const orgName = network[org].name;
     const cryptoSuite = Client.newCryptoSuite();
     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(orgName)}));
     client.setCryptoSuite(cryptoSuite);
 
-    const caRootsPath = ORGS.orderers[0].tls_cacerts;
+    const caRootsPath = network.orderers[0].tls_cacerts;
     let data = fs.readFileSync(commUtils.resolvePath(caRootsPath));
     let caroots = Buffer.from(data).toString();
 
     channel.addOrderer(
         client.newOrderer(
-            ORGS.orderers[0].url,
+            network.orderers[0].url,
             {
                 'pem': caroots,
-                'ssl-target-name-override': ORGS.orderers[0]['server-hostname']
+                'ssl-target-name-override': network.orderers[0]['server-hostname']
             }
         )
     );
 
-    const targets = [];
-    for (let key in ORGS[org]) {
-        if (ORGS[org].hasOwnProperty(key)) {
+    let targets = [];
+    for (let key in network[org]) {
+        if (network[org].hasOwnProperty(key)) {
             if (key.indexOf('peer') === 0) {
-                let data = fs.readFileSync(commUtils.resolvePath(ORGS[org][key].tls_cacerts));
+                let data = fs.readFileSync(commUtils.resolvePath(network[org][key].tls_cacerts));
                 let peer = client.newPeer(
-                    ORGS[org][key].requests,
+                    network[org][key].requests,
                     {
                         pem: Buffer.from(data).toString(),
-                        'ssl-target-name-override': ORGS[org][key]['server-hostname']
+                        'ssl-target-name-override': network[org][key]['server-hostname']
                     }
                 );
 
@@ -293,10 +269,8 @@ function installChaincode(org, chaincode) {
         client.setStateStore(store);
 
         // get the peer org's admin required to send install chaincode requests
-        return testUtil.getSubmitter(client, true /* get peer org admin */, org);
-    }).then((admin) => {
-        the_user = admin;
-
+        return testUtil.getSubmitter(client, true /* get peer org admin */, org, settings);
+    }).then(async (admin) => {
         let resolvedPath = chaincode.path;
         let metadataPath = chaincode.metadataPath ? commUtils.resolvePath(chaincode.metadataPath) : chaincode.metadataPath;
         if (chaincode.language === 'node') {
@@ -312,7 +286,7 @@ function installChaincode(org, chaincode) {
             chaincodeType: chaincode.language,
             chaincodeVersion: chaincode.version
         };
-        return client.installChaincode(request);
+        return await client.installChaincode(request);
     },
     (err) => {
         throw new Error('Failed to enroll user \'admin\'. ' + err);
@@ -398,38 +372,33 @@ function buildChaincodeProposal(client, the_user, chaincode, upgrade, transientM
  * @param {boolean} upgrade Indicates whether the call is an upgrade or a new instantiation.
  * @return {Promise} The return promise.
  */
-function instantiateChaincode(chaincode, endorsement_policy, upgrade){
-    Client.setConfigSetting('request-timeout', 120000);
+function instantiateChaincode(settings, userOrg, chaincode, endorsement_policy, upgrade) {
+    const network = settings.network;
+    const channel_name = chaincode.channel;
 
-    let channel = testUtil.getChannel(chaincode.channel);
-    if(channel === null) {
-        return Promise.reject(new Error('could not find channel in config'));
-    }
-    const channel_name = channel.name;
-    const userOrg = channel.organizations[0];
-
+    let tx_id;
     let targets = [],
         eventhubs = [];
     let type = 'instantiate';
     if(upgrade) {type = 'upgrade';}
     const client = new Client();
-    channel = client.newChannel(channel_name);
+    let channel = client.newChannel(channel_name);
 
-    const orgName = ORGS[userOrg].name;
+    const orgName = network[userOrg].name;
     const cryptoSuite = Client.newCryptoSuite();
     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(orgName)}));
     client.setCryptoSuite(cryptoSuite);
 
-    const caRootsPath = ORGS.orderers[0].tls_cacerts;
+    const caRootsPath = network.orderers[0].tls_cacerts;
     let data = fs.readFileSync(commUtils.resolvePath(caRootsPath));
     let caroots = Buffer.from(data).toString();
 
     channel.addOrderer(
         client.newOrderer(
-            ORGS.orderers[0].url,
+            network.orderers[0].url,
             {
                 'pem': caroots,
-                'ssl-target-name-override': ORGS.orderers[0]['server-hostname']
+                'ssl-target-name-override': network.orderers[0]['server-hostname']
             }
         )
     );
@@ -442,48 +411,39 @@ function instantiateChaincode(chaincode, endorsement_policy, upgrade){
     }).then((store) => {
 
         client.setStateStore(store);
-        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg);
+        return testUtil.getSubmitter(client, true /* use peer org admin*/, userOrg, settings);
 
-    }).then((admin) => {
-        the_user = admin;
+    }).then(async (admin) => {
+        let the_user = admin;
 
-        let eventPeer = null;
-        for(let org in ORGS) {
-            if(ORGS.hasOwnProperty(org) && org.indexOf('org') === 0) {
-                for (let key in ORGS[org]) {
-                    if(ORGS[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
-                        let data = fs.readFileSync(commUtils.resolvePath(ORGS[org][key].tls_cacerts));
+        for(let org in network) {
+            if(network.hasOwnProperty(org) && org.indexOf('org') === 0) {
+                for (let key in network[org]) {
+                    if(network[org].hasOwnProperty(key) && key.indexOf('peer') === 0) {
+                        let data = fs.readFileSync(commUtils.resolvePath(network[org][key].tls_cacerts));
                         let peer = client.newPeer(
-                            ORGS[org][key].requests,
+                            network[org][key].requests,
                             {
                                 pem: Buffer.from(data).toString(),
-                                'ssl-target-name-override': ORGS[org][key]['server-hostname']
+                                'ssl-target-name-override': network[org][key]['server-hostname']
                             });
                         targets.push(peer);
                         channel.addPeer(peer);
-                        if(org === userOrg && !eventPeer) {
-                            eventPeer = key;
-                        }
                     }
                 }
             }
         }
-
-    }, (err) => {
-        throw new Error('Failed to enroll user \'admin\'. ' + err);
-
-    }).then(() => {
 
         // the v1 chaincode has Init() method that expects a transient map
         if (upgrade) {
             let request = buildChaincodeProposal(client, the_user, chaincode, upgrade, transientMap, endorsement_policy);
             tx_id = request.txId;
 
-            return channel.sendUpgradeProposal(request);
+            return await channel.sendUpgradeProposal(request);
         } else {
             let request = buildChaincodeProposal(client, the_user, chaincode, upgrade, transientMap, endorsement_policy);
             tx_id = request.txId;
-            return channel.sendInstantiateProposal(request);
+            return await channel.sendInstantiateProposal(request);
         }
 
     }, (err) => {
@@ -585,9 +545,9 @@ module.exports.instantiateChaincode = instantiateChaincode;
  * @param {string} orgName The name of the organization.
  * @return {string[]} The collection of peer names.
  */
-function getOrgPeers(orgName) {
-    const peers = [];
-    const org = ORGS[orgName];
+function getOrgPeers(network, orgName) {
+    let peers = [];
+    const org = network[orgName];
     for (let key in org) {
         if ( org.hasOwnProperty(key)) {
             if (key.indexOf('peer') === 0) {
@@ -604,8 +564,8 @@ function getOrgPeers(orgName) {
  * @param {object} channelConfig The channel object from the configuration file.
  * @return {Promise<object>} The created Fabric context.
  */
-function getcontext(channelConfig, clientIdx) {
-    Client.setConfigSetting('request-timeout', 120000);
+function getcontext(settings, channelConfig, clientIdx) {
+    const network = settings.network;
     const channel_name = channelConfig.name;
     // var userOrg = channelConfig.organizations[0];
     // choose a random org to use, for load balancing
@@ -614,43 +574,41 @@ function getcontext(channelConfig, clientIdx) {
 
     const client = new Client();
     const channel = client.newChannel(channel_name);
-    let orgName = ORGS[userOrg].name;
+    let orgName = network[userOrg].name;
     const cryptoSuite = Client.newCryptoSuite();
     const eventhubs = [];
     cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(orgName)}));
     client.setCryptoSuite(cryptoSuite);
 	
-    let oidx = clientIdx % ORGS.orderers.length;
-    const caRootsPath = ORGS.orderers[oidx].tls_cacerts;
+    let oidx = clientIdx % network.orderers.length;
+    const caRootsPath = network.orderers[oidx].tls_cacerts;
     let data = fs.readFileSync(commUtils.resolvePath(caRootsPath));
     let caroots = Buffer.from(data).toString();
 
     channel.addOrderer(
         client.newOrderer(
-            ORGS.orderers[oidx].url,
+            network.orderers[oidx].url,
             {
                 'pem': caroots,
-                'ssl-target-name-override': ORGS.orderers[oidx]['server-hostname']
+                'ssl-target-name-override': network.orderers[oidx]['server-hostname']
             }
         )
     );
 
-    orgName = ORGS[userOrg].name;
+    orgName = network[userOrg].name;
     let eh;
     return Client.newDefaultKeyValueStore({path: testUtil.storePathForOrg(orgName)})
         .then((store) => {
             if (store) {
                 client.setStateStore(store);
             }
-            return testUtil.getSubmitter(client, true, userOrg);
+            return testUtil.getSubmitter(client, true, userOrg, settings);
         }).then((admin) => {
-            the_user = admin;
-
             // set up the channel to use each org's random peer for
             // both requests and events
             for(let i in channelConfig.organizations) {
                 let org   = channelConfig.organizations[i];
-                let peers = getOrgPeers(org);
+                let peers = getOrgPeers(network, org);
 
                 if(peers.length === 0) {
                     throw new Error('could not find peer of ' + org);

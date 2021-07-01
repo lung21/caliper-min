@@ -43,8 +43,7 @@ const commUtils = require('../comm/util');
  * @return {Promise} The return promise.
  */
 function run(config_path) {
-    Client.addConfigFile(config_path);
-    const fabric = Client.getConfigSetting('fabric');
+    const fabric = require(config_path).fabric;
     const channels = fabric.channel;
     if(!channels || channels.length === 0) {
         return Promise.reject(new Error('No channel information found'));
@@ -85,7 +84,7 @@ function run(config_path) {
                         let cryptoSuite = Client.newCryptoSuite();
                         cryptoSuite.setCryptoKeyStore(Client.newCryptoKeyStore({path: testUtil.storePathForOrg(org)}));
                         client.setCryptoSuite(cryptoSuite);
-                        return testUtil.getOrderAdminSubmitter(client);
+                        return testUtil.getOrderAdminSubmitter(client, fabric);
                     })
                     .then((admin) =>{
                         // use the config update created by the configtx tool
@@ -98,13 +97,13 @@ function run(config_path) {
                         return channel.organizations.reduce(function(prev, item){
                             return prev.then(() => {
                                 client._userContext = null;
-                                return testUtil.getSubmitter(client, true, item).then((orgAdmin) =>{
+                                return testUtil.getSubmitter(client, true, item, fabric).then((orgAdmin) =>{
                                     // sign the config
                                     let signature = client.signChannelConfig(config);
                                     // TODO: signature counting against policies on the orderer
                                     // at the moment is being investigated, but it requires this
                                     // weird double-signature from each org admin
-                                    signatures.push(signature);
+                                    // signatures.push(signature);
                                     signatures.push(signature);
                                     return Promise.resolve();
                                 });
@@ -112,16 +111,16 @@ function run(config_path) {
                         }, Promise.resolve())
                             .then(()=>{
                                 client._userContext = null;
-                                return testUtil.getOrderAdminSubmitter(client);
+                                return testUtil.getOrderAdminSubmitter(client, fabric);
                             })
-                            .then((orderAdmin) => {
+                            .then(async (orderAdmin) => {
                                 // sign the config
                                 let signature = client.signChannelConfig(config);
                                 // collect signature from orderer admin
                                 // TODO: signature counting against policies on the orderer
                                 // at the moment is being investigated, but it requires this
                                 // weird double-signature from each org admin
-                                signatures.push(signature);
+                                // signatures.push(signature);
                                 signatures.push(signature);
                                 // build up the create request
                                 let tx_id = client.newTransactionID();
@@ -134,7 +133,7 @@ function run(config_path) {
                                 };
 
                                 // send create request to orderer
-                                return client.createChannel(request);
+                                return await client.createChannel(request);
                             })
                             .then((result) => {
                                 if(result.status && result.status === 'SUCCESS') {

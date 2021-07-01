@@ -27,42 +27,51 @@
 //const test = _test(tape);
 
 const e2eUtils = require('./e2eUtils.js');
-const commUtils = require('../comm/util');
+const testUtil = require('./util.js');
 
-const Client = require('fabric-client');
-
-module.exports.run = function (chaincodes_config, config_path) {
-    Client.addConfigFile(config_path);
-    const fabricSettings = Client.getConfigSetting('fabric');
-    const policy = fabricSettings['endorsement-policy'];  // TODO: support mulitple policies
+module.exports.run = function(chaincodes_config, config_path) {
+    const settings = require(config_path).fabric;
+    const policy = settings['endorsement-policy'];  // TODO: support mulitple policies
+    // Copy array
     let chaincodes = chaincodes_config;
-    if(typeof chaincodes === 'undefined' || chaincodes.length === 0) {
+    if (typeof chaincodes === 'undefined' || chaincodes.length === 0) {
         return Promise.resolve();
     }
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(async (resolve, reject) => {
         // test('\n\n***** instantiate chaincode *****\n\n', (t) => {
         const t = global.tapeObj;
         t.comment('Instantiate chaincode......');
-        chaincodes.reduce(function(prev, chaincode){
-            if(!chaincode.hasOwnProperty("channel")) {
+
+        let promises = [];
+        let chaincodeNames = [];
+
+        chaincodes.forEach((chaincode) => {
+
+            let chaincodeCopy = { ...chaincode }
+
+            let channel;
+
+            if (!chaincodeCopy.hasOwnProperty("channel")) {
                 // channel field in chaincode will be later used as the channel name in e2eUtils
-                chaincode.channel = testUtil.getDefaultChannel().name;
+                channel = testUtil.getDefaultChannel(settings.channel);
+                chaincodeCopy.channel = channel.name;
+            } else {
+                channel = testUtil.getChannel(settings.channel, chaincodeCopy.channel);
             }
-            return prev.then(() => {
-                return e2eUtils.instantiateChaincode(chaincode, policy, false).then(() => {
-                    t.pass('Instantiated chaincode ' + chaincode.id + ' successfully ');
-                    t.comment('Sleep 5s...');
-                    return commUtils.sleep(5000);
-                });
-            });
-        }, Promise.resolve())
-            .then(() => {
-                return resolve();
-            })
-            .catch((err) => {
-                t.fail('Failed to instantiate chaincodes, ' + (err.stack?err.stack:err));
-                return reject(new Error('Fabric: instantiate chaincodes failed'));
-            });
+
+            promises.push(e2eUtils.instantiateChaincode(settings,  channel.organizations[0], chaincodeCopy, policy, false));
+
+            chaincodeNames.push(chaincodeCopy.id);
+        });
+
+        try {
+            await Promise.all(promises);
+            t.pass('Instantiated chaincode ' + chaincodeNames.reduce((prev, curr) => prev + curr, '') + ' successfully ');
+            resolve();
+        } catch (err) {
+            t.fail('Failed to instantiate chaincodes, ' + (err.stack?err.stack:err));
+            reject(new Error('Fabric: instantiate chaincodes failed'));
+        }
     });
 };
