@@ -8,7 +8,7 @@
    "description" : "This is financier benchmark to test invoking functionality",
    "clients": {
      "type": "local",
-     "number": 6
+     "number": 8
    },
    "rounds": [
      {
